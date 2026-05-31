@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>汽车引擎模拟 - 3D多缸引擎运转原理</title>
+    <style>
+        :root {
+            --bg: #1a1d23; --panel-bg: #21252b; --text: #e0e0e0; --text-secondary: #a0a0a0;
+            --accent: #f0a040; --border: #333840; --slider-track: #3a3f48; --button-bg: #2a2f38;
+            --danger: #e04040; --radius: 10px; --shadow: 0 4px 24px rgba(0,0,0,0.5);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            height: 100%; width: 100%; overflow: hidden;
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: var(--bg); color: var(--text);
+            user-select: none; -webkit-user-select: none; touch-action: manipulation;
+        }
+        #canvas-container {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1;
+            cursor: grab; background: #1a1d23; /* 确保容器可见 */
+        }
+        canvas { display: block; }
+        #top-bar {
+            position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 10;
+            background: var(--panel-bg); border: 1px solid var(--border); border-radius: 30px;
+            padding: 6px 16px; display: flex; align-items: center; gap: 10px;
+            box-shadow: var(--shadow); backdrop-filter: blur(12px); flex-wrap: wrap; justify-content: center;
+            font-size: 0.85rem;
+        }
+        #top-bar .engine-name { font-weight: 700; color: var(--accent); white-space: nowrap; }
+        #top-bar .rpm-display { font-family: monospace; font-size: 1.1rem; font-weight: 700; color: #fff; min-width: 70px; }
+        #top-bar .rpm-display.over-rev { color: var(--danger); animation: pulse-warn 0.5s infinite; }
+        #top-bar .gear-badge { background: var(--button-bg); padding: 4px 10px; border-radius: 14px; font-size: 0.8rem; font-weight: 600; }
+        #top-bar .gear-badge.danger { background: var(--danger); color: #fff; animation: pulse-warn 0.4s infinite; }
+        @keyframes pulse-warn { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        #control-panel {
+            position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 10;
+            background: var(--panel-bg); border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 10px 14px; box-shadow: var(--shadow); backdrop-filter: blur(12px);
+            display: flex; flex-direction: column; gap: 8px; max-width: 95vw; width: 560px;
+        }
+        #control-panel .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; }
+        #control-panel label { font-size: 0.7rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; }
+        .engine-btn {
+            padding: 6px 10px; border-radius: 16px; border: 1.5px solid var(--border); background: var(--button-bg);
+            color: var(--text); cursor: pointer; font-weight: 600; font-size: 0.72rem; transition: 0.25s; white-space: nowrap;
+        }
+        .engine-btn.active { background: var(--accent); border-color: var(--accent); color: #1a1d23; }
+        #speed-slider { -webkit-appearance: none; flex: 1; min-width: 100px; height: 6px; background: var(--slider-track); }
+        #speed-slider::-webkit-slider-thumb { width: 24px; height: 24px; background: #fff; border: 3px solid var(--accent); border-radius: 50%; }
+        .view-btn { padding: 5px 9px; border-radius: 14px; border: 1.5px solid var(--border); background: var(--button-bg); color: var(--text); cursor: pointer; font-weight: 500; font-size: 0.68rem; }
+        .view-btn.active-view { background: #40a0f0; border-color: #40a0f0; color: #fff; }
+        #reset-btn { padding: 6px 14px; border-radius: 16px; border: 2px solid var(--danger); background: transparent; color: var(--danger); font-weight: 700; font-size: 0.72rem; }
+        #tooltip {
+            position: fixed; pointer-events: none; z-index: 20; background: rgba(20,22,28,0.95); border: 1px solid var(--border);
+            border-radius: 6px; padding: 8px 12px; font-size: 0.7rem; color: #fff; max-width: 200px; opacity: 0; transition: opacity 0.2s;
+        }
+        #tooltip.visible { opacity: 1; }
+        #blowup-analysis {
+            position: fixed; top: 100px; right: 10px; z-index: 15; background: rgba(25,20,20,0.92);
+            border: 2px solid var(--danger); border-radius: var(--radius); padding: 12px 16px;
+            max-width: 240px; color: #ffcccc; font-size: 0.7rem; display: none; backdrop-filter: blur(8px);
+        }
+        #blowup-analysis.visible { display: block; animation: fadeIn 0.4s; }
+        @keyframes fadeIn { from { opacity:0; transform: translateX(30px); } to { opacity:1; transform: translateX(0); } }
+        #legend-dots { position: fixed; right: 8px; top: 50%; transform: translateY(-50%); z-index: 8; display: flex; flex-direction: column; gap: 8px; }
+        .legend-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); cursor: pointer; }
+    </style>
+</head>
+<body>
+<div id="canvas-container"></div>
+<div id="top-bar">
+    <span class="engine-name" id="engine-name-display">直列4缸引擎</span>
+    <span class="rpm-display" id="rpm-display">0 RPM</span>
+    <span class="gear-badge" id="gear-badge">未启动</span>
+</div>
+<div id="control-panel">
+    <div class="row">
+        <label>引擎类型</label>
+        <div class="engine-selector" id="engine-selector">
+            <button class="engine-btn" data-cylinders="3">3缸</button>
+            <button class="engine-btn active" data-cylinders="4">4缸</button>
+            <button class="engine-btn" data-cylinders="6">V6</button>
+            <button class="engine-btn" data-cylinders="8">V8</button>
+            <button class="engine-btn" data-cylinders="10">V10</button>
+            <button class="engine-btn" data-cylinders="12">V12</button>
+        </div>
+    </div>
+    <div class="row">
+        <label>转速档位</label>
+        <input type="range" id="speed-slider" min="0" max="7" step="1" value="1">
+        <span id="speed-label" style="font-weight:700;">1档 怠速</span>
+    </div>
+    <div class="row">
+        <label>视角</label>
+        <button class="view-btn active-view" data-view="perspective">透视</button>
+        <button class="view-btn" data-view="front">正面</button>
+        <button class="view-btn" data-view="side">侧面</button>
+        <button class="view-btn" data-view="top">顶部</button>
+        <button class="view-btn" data-view="crankshaft">曲轴</button>
+        <button class="view-btn" data-view="piston">活塞</button>
+        <button id="reset-btn">🔧 重置</button>
+    </div>
+</div>
+<div id="blowup-analysis">
+    <button class="close-analysis" id="close-analysis-btn">✕</button>
+    <h3>💥 爆缸原因分析</h3>
+    <ul id="analysis-content"></ul>
+</div>
+<div id="tooltip"><span class="part-name"></span><span class="part-desc"></span></div>
+<div id="legend-dots">
+    <div class="legend-dot piston-dot" data-part="piston"></div>
+    <div class="legend-dot rod-dot" data-part="rod"></div>
+    <div class="legend-dot crank-dot" data-part="crankshaft"></div>
+    <div class="legend-dot cylinder-dot" data-part="cylinder"></div>
+    <div class="legend-dot flywheel-dot" data-part="flywheel"></div>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// DOM
+const container = document.getElementById('canvas-container');
+const engineNameDisplay = document.getElementById('engine-name-display');
+const rpmDisplay = document.getElementById('rpm-display');
+const gearBadge = document.getElementById('gear-badge');
+const speedSlider = document.getElementById('speed-slider');
+const speedLabel = document.getElementById('speed-label');
+const tooltip = document.getElementById('tooltip');
+const resetBtn = document.getElementById('reset-btn');
+const engineSelector = document.getElementById('engine-selector');
+const viewButtons = document.querySelectorAll('.view-btn');
+const blowupPanel = document.getElementById('blowup-analysis');
+const analysisContent = document.getElementById('analysis-content');
+const closeAnalysisBtn = document.getElementById('close-analysis-btn');
+
+// 场景
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#1a1d23');
+
+// 相机：确保能看到引擎
+const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.5, 30);
+camera.position.set(3.5, 2.0, 7.0);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(container.clientWidth, container.clientHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -0.2, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.15;
+controls.minDistance = 3;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.8;
+controls.update();
+
+// 光照
+scene.add(new THREE.AmbientLight('#8899bb', 2.0));
+const sun = new THREE.DirectionalLight('#ffffff', 5.0);
+sun.position.set(5, 10, 7);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+scene.add(sun);
+scene.add(new THREE.DirectionalLight('#8899cc', 1.5).position.set(-3, 2, -2));
+
+// 简单地面
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(15, 15), new THREE.MeshStandardMaterial({ color: '#22252a', roughness: 0.6 }));
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -3.5;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// 纹理
+function createFireTex() {
+    const c = document.createElement('canvas');
+    c.width = 32; c.height = 32;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(16,16,0,16,16,16);
+    g.addColorStop(0,'rgba(255,255,200,1)'); g.addColorStop(0.3,'rgba(255,100,0,0.9)');
+    g.addColorStop(0.7,'rgba(255,0,0,0.3)'); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,32,32);
+    return new THREE.CanvasTexture(c);
+}
+function createSmokeTex() {
+    const c = document.createElement('canvas');
+    c.width = 32; c.height = 32;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(16,16,0,16,16,16);
+    g.addColorStop(0,'rgba(60,60,60,0.8)'); g.addColorStop(0.6,'rgba(30,30,30,0.3)');
+    g.addColorStop(1,'rgba(0,0,0,0)'); ctx.fillStyle=g; ctx.fillRect(0,0,32,32);
+    return new THREE.CanvasTexture(c);
+}
+const fireTex = createFireTex();
+const smokeTex = createSmokeTex();
+
+// 引擎变量
+let engineGroup = new THREE.Group(); scene.add(engineGroup);
+let allPistonGroups = [], crankGroup, flywheelGroup;
+let crankRadius=0.35, rodLength=1.05, cylinderBoreRadius=0.22;
+let allCrankPinAngles=[], crankPinZPositions=[], vBankAngle=0, currentCylinders=4, isVType=false;
+let engineBlown=false, blowUpPhase=0, blowUpTimer=0;
+let debrisParticles=[], smokeParticles=[], fireParticles=[];
+const BLOWUP_SLOWMO = 0.35;
+let brokenPistons = [];
+
+function disposeRecursive(obj){
+    if(!obj)return;
+    obj.children?.forEach(c=>disposeRecursive(c));
+    obj.geometry?.dispose();
+    if(obj.material) Array.isArray(obj.material) ? obj.material.forEach(m=>m.dispose()) : obj.material.dispose();
+}
+
+function clearEngine(){
+    while(engineGroup.children.length) { const c=engineGroup.children[0]; disposeRecursive(c); engineGroup.remove(c); }
+    [debrisParticles, smokeParticles, fireParticles].forEach(arr=>{
+        arr.forEach(p=>{ if(p.sprite) { scene.remove(p.sprite); p.sprite.material.dispose(); } if(p.mesh) { disposeRecursive(p.mesh); scene.remove(p.mesh); } });
+        arr.length = 0;
+    });
+    allPistonGroups=[]; crankGroup=null; flywheelGroup=null;
+    engineBlown=false; blowUpPhase=0; blowUpTimer=0; brokenPistons=[];
+    engineGroup.position.set(0,0,0); engineGroup.rotation.set(0,0,0);
+    blowupPanel.classList.remove('visible');
+}
+
+function buildEngine(cyl){
+    clearEngine();
+    currentCylinders=cyl;
+    let cfg;
+    if(cyl===3) cfg={t:'inline',ba:0,cp:3,pa:[0,120,240].map(d=>d*Math.PI/180),n:'直列3缸引擎',zl:2,zs:0.75};
+    else if(cyl===4) cfg={t:'inline',ba:0,cp:4,pa:[0,180,180,0].map(d=>d*Math.PI/180),n:'直列4缸引擎',zl:2.6,zs:0.72};
+    else if(cyl===6) cfg={t:'V',ba:60,cp:3,pa:[0,120,240].map(d=>d*Math.PI/180),n:'V6引擎',zl:2,zs:0.78};
+    else if(cyl===8) cfg={t:'V',ba:90,cp:4,pa:[0,90,180,270].map(d=>d*Math.PI/180),n:'V8引擎',zl:2.6,zs:0.7};
+    else if(cyl===10) cfg={t:'V',ba:72,cp:5,pa:[0,72,144,216,288].map(d=>d*Math.PI/180),n:'V10引擎',zl:3.2,zs:0.68};
+    else if(cyl===12) cfg={t:'V',ba:60,cp:6,pa:[0,60,120,180,240,300].map(d=>d*Math.PI/180),n:'V12引擎',zl:3.8,zs:0.66};
+    else cfg={t:'inline',ba:0,cp:4,pa:[0,180,180,0].map(d=>d*Math.PI/180),n:'直列4缸引擎',zl:2.6,zs:0.72};
+    isVType=cfg.t==='V'; vBankAngle=cfg.ba*Math.PI/180;
+    allCrankPinAngles=[...cfg.pa]; crankPinZPositions=[];
+    const ncp=cfg.cp, zs=cfg.zs, zStart=-(ncp-1)*zs/2;
+    for(let i=0;i<ncp;i++) crankPinZPositions.push(zStart+i*zs);
+    engineNameDisplay.textContent=cfg.n;
+    crankRadius=0.35; rodLength=1.05; cylinderBoreRadius=0.22;
+    if(cyl>=10){crankRadius=0.32; rodLength=0.95; cylinderBoreRadius=0.19;}
+    if(cyl>=12){crankRadius=0.28; rodLength=0.88; cylinderBoreRadius=0.17;}
+
+    const bw=isVType?1.8:1.0;
+    const block = new THREE.Mesh(new THREE.BoxGeometry(bw,0.55,cfg.zl+0.6), new THREE.MeshStandardMaterial({color:'#3a3d48', roughness:0.4, metalness:0.8}));
+    block.position.y=-0.45; block.castShadow=block.receiveShadow=true; engineGroup.add(block);
+    const oilPan = new THREE.Mesh(new THREE.BoxGeometry(bw-0.2,0.3,cfg.zl-0.3), new THREE.MeshStandardMaterial({color:'#2a2d35', roughness:0.5, metalness:0.6}));
+    oilPan.position.y=-0.8; engineGroup.add(oilPan);
+
+    crankGroup = new THREE.Group(); engineGroup.add(crankGroup);
+    const ms = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,cfg.zl+0.5,32), new THREE.MeshStandardMaterial({color:'#5a5d68', roughness:0.3, metalness:0.85}));
+    ms.rotation.x=Math.PI/2; ms.castShadow=true; crankGroup.add(ms);
+    for(let i=0;i<ncp;i++){
+        const a=allCrankPinAngles[i], z=crankPinZPositions[i];
+        const pg=new THREE.Group(); pg.position.z=z;
+        const arm=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.16,24), new THREE.MeshStandardMaterial({color:'#50535d', roughness:0.35, metalness:0.8}));
+        arm.rotation.x=Math.PI/2; arm.castShadow=true; pg.add(arm);
+        const px=crankRadius*Math.sin(a), py=crankRadius*Math.cos(a);
+        const pin=new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,0.22,20), new THREE.MeshStandardMaterial({color:'#6a6d78', roughness:0.2, metalness:0.9}));
+        pin.position.set(px,py,0); pin.rotation.x=Math.PI/2; pin.castShadow=true; pg.add(pin);
+        const br=new THREE.Mesh(new THREE.BoxGeometry(0.1,crankRadius*2,0.14), new THREE.MeshStandardMaterial({color:'#484b55', roughness:0.35, metalness:0.8}));
+        br.position.set(px/2,py/2,0); br.rotation.z=a; br.castShadow=true; pg.add(br);
+        crankGroup.add(pg);
+    }
+
+    flywheelGroup = new THREE.Group(); flywheelGroup.position.z=cfg.zl/2+0.4; engineGroup.add(flywheelGroup);
+    const fw = new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.18,48), new THREE.MeshStandardMaterial({color:'#3e414a', roughness:0.3, metalness:0.9}));
+    fw.rotation.x=Math.PI/2; fw.castShadow=true; flywheelGroup.add(fw);
+    for(let i=0;i<60;i++){
+        const ta=(i/60)*Math.PI*2;
+        const t=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.05,0.2), new THREE.MeshStandardMaterial({color:'#3e414a', roughness:0.3, metalness:0.9}));
+        t.position.set(Math.cos(ta)*0.56, Math.sin(ta)*0.56, 0); t.rotation.z=ta; flywheelGroup.add(t);
+    }
+
+    allPistonGroups=[];
+    const addPiston=(z, ang, xOff, crankIdx, pIdx)=>{
+        const g=new THREE.Group(); g.position.set(xOff,0,z); g.rotation.z=ang; engineGroup.add(g);
+        const cylMat=new THREE.MeshPhysicalMaterial({
+            color: new THREE.Color('#8899bb'), roughness:0.2, metalness:0.1,
+            transparent:true, opacity:0.45, depthWrite:false, emissive: new THREE.Color(0x000000)
+        });
+        const cylMesh=new THREE.Mesh(new THREE.CylinderGeometry(cylinderBoreRadius+0.06,cylinderBoreRadius+0.06,1.15,32,1,true), cylMat);
+        cylMesh.position.y=0.85; g.add(cylMesh);
+        const piston=new THREE.Mesh(new THREE.CylinderGeometry(cylinderBoreRadius-0.02,cylinderBoreRadius-0.01,0.28,32),
+            new THREE.MeshStandardMaterial({color:0xc8ccd4, roughness:0.25, metalness:0.7}));
+        piston.position.y=0.8; piston.castShadow=true; piston.name=`piston-${pIdx}`; g.add(piston);
+        const pinGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.12, 8);
+        const pistonPin = new THREE.Mesh(pinGeo, new THREE.MeshStandardMaterial({color:'#aaaacc', roughness:0.3, metalness:0.9}));
+        pistonPin.rotation.x = Math.PI/2; pistonPin.position.y = -0.05; piston.add(pistonPin);
+        const rodG=new THREE.Group(); g.add(rodG);
+        const beam=new THREE.Mesh(new THREE.BoxGeometry(0.08,rodLength,0.09), new THREE.MeshStandardMaterial({color:'#7a8090', roughness:0.3, metalness:0.75}));
+        beam.position.y=-rodLength/2; beam.castShadow=true; rodG.add(beam);
+        const rodSmall = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,0.1,8), new THREE.MeshStandardMaterial({color:'#999aaa', roughness:0.3, metalness:0.9}));
+        rodSmall.rotation.x = Math.PI/2; rodSmall.position.y = -rodLength; rodG.add(rodSmall);
+        allPistonGroups.push({
+            group:g, axis:new THREE.Vector3(Math.sin(ang),Math.cos(ang),0).normalize(),
+            bankAngle:ang, crankPinIndex:crankIdx, baseY:0.15, rodGroup:rodG, pistonMesh:piston,
+            zPosition:z, cylMesh:cylMesh
+        });
+    };
+    if(isVType){
+        const half=vBankAngle/2;
+        [[-half,-0.22],[half,0.22]].forEach(([ang,xOff])=> for(let i=0;i<ncp;i++) addPiston(crankPinZPositions[i], ang, xOff, i, i));
+    }else for(let i=0;i<ncp;i++) addPiston(crankPinZPositions[i],0,0,i,i);
+    updateAllPistonPositions(0);
+}
+
+function updateAllPistonPositions(angle){
+    if(!crankGroup)return;
+    crankGroup.rotation.z=angle;
+    if(flywheelGroup) flywheelGroup.rotation.z=angle;
+    allPistonGroups.forEach(p=>{
+        if(brokenPistons.includes(p.pistonMesh.name)) return;
+        const pa=allCrankPinAngles[p.crankPinIndex]+angle;
+        const px=crankRadius*Math.sin(pa), py=crankRadius*Math.cos(pa);
+        const pinW=new THREE.Vector3(p.group.position.x+px, py, p.zPosition);
+        const orig=new THREE.Vector3(p.group.position.x, p.baseY, p.zPosition);
+        const rel=pinW.clone().sub(orig);
+        const along=rel.dot(p.axis), perp=rel.clone().sub(p.axis.clone().multiplyScalar(along));
+        const clampedPerp=Math.min(perp.length(), rodLength*0.98);
+        const axial=Math.sqrt(Math.max(0,rodLength*rodLength-clampedPerp*clampedPerp));
+        const pistonY=Math.max(p.baseY+0.05, Math.min(p.baseY+1.05, along+axial));
+        p.pistonMesh.position.y=pistonY;
+        const pistonW=orig.clone().add(p.axis.clone().multiplyScalar(pistonY));
+        const mid=pinW.clone().add(pistonW).multiplyScalar(0.5);
+        const localMid=mid.clone().sub(p.group.position);
+        p.rodGroup.position.set(localMid.x, localMid.y-p.baseY, localMid.z-p.zPosition);
+        const dir=pistonW.clone().sub(pinW).normalize();
+        p.rodGroup.rotation.z=Math.atan2(dir.x, dir.y)-p.bankAngle;
+        const dist=pinW.distanceTo(pistonW);
+        const beam=p.rodGroup.children.find(c=>c.name==='rod-beam');
+        if(beam){ beam.scale.y=Math.max(0.6, dist/rodLength); beam.position.y=-dist/2; }
+    });
+}
+
+function updateCylinderGlow(crankAngle) {
+    if (engineBlown) return;
+    const rpmFactor = Math.min(currentRPM / 5000, 1.0);
+    allPistonGroups.forEach(p => {
+        if (brokenPistons.includes(p.pistonMesh.name)) return;
+        const pinAngle = allCrankPinAngles[p.crankPinIndex] + crankAngle;
+        const normalized = ((pinAngle % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
+        if (normalized > 0.1 && normalized < Math.PI - 0.1 && currentRPM > 200) {
+            p.cylMesh.material.emissive.set(new THREE.Color(1.0, 0.7, 0.2).multiplyScalar(rpmFactor * 0.8));
+            if (Math.random() < 0.35) {
+                const wp = new THREE.Vector3(); p.pistonMesh.getWorldPosition(wp);
+                wp.add(p.axis.clone().multiplyScalar(0.35));
+                const mat = new THREE.SpriteMaterial({ map: fireTex, blending: THREE.AdditiveBlending, depthWrite: false, color: new THREE.Color(1, 0.5, 0.1) });
+                const sprite = new THREE.Sprite(mat);
+                sprite.position.copy(wp).add(new THREE.Vector3((Math.random()-0.5)*0.2, (Math.random()-0.5)*0.1, (Math.random()-0.5)*0.2));
+                sprite.scale.set(0.2+Math.random()*0.25, 0.2+Math.random()*0.25, 1);
+                scene.add(sprite);
+                fireParticles.push({ sprite, vel: new THREE.Vector3((Math.random()-0.5)*2.5, 3+Math.random()*5, (Math.random()-0.5)*2.5), life: 0.2+Math.random()*0.3, age: 0, initScale: sprite.scale.clone() });
+            }
+        } else {
+            p.cylMesh.material.emissive.set(new THREE.Color(0x000000));
+        }
+    });
+}
+
+function triggerBlowUp(){
+    if(engineBlown)return;
+    engineBlown=true; blowUpPhase=1; blowUpTimer=0;
+    targetRPM = 9999;
+    brokenPistons=[];
+    gearBadge.textContent='💥 爆缸!'; gearBadge.classList.add('danger');
+    rpmDisplay.classList.add('over-rev');
+    speedLabel.textContent='爆缸!'; speedLabel.style.color='#e04040';
+    showBlowupAnalysis();
+}
+
+function resetEngine(){
+    engineBlown=false; blowUpPhase=0; blowUpTimer=0; brokenPistons=[];
+    gearBadge.textContent='未启动'; gearBadge.classList.remove('danger');
+    rpmDisplay.classList.remove('over-rev');
+    speedSlider.value=1; speedLabel.textContent='1档 怠速'; speedLabel.style.color='';
+    rpmDisplay.textContent='800 RPM'; hideBlowupAnalysis();
+    [debrisParticles, smokeParticles, fireParticles].forEach(arr=>{
+        arr.forEach(p=>{ if(p.sprite) { scene.remove(p.sprite); p.sprite.material.dispose(); } if(p.mesh) { disposeRecursive(p.mesh); scene.remove(p.mesh); } });
+        arr.length = 0;
+    });
+    engineGroup.position.set(0,0,0);
+    buildEngine(currentCylinders);
+    updateAllPistonPositions(0.1);
+}
+
+function spawnSmoke(pos, count) {
+    for (let i=0; i<count; i++) {
+        const mat = new THREE.SpriteMaterial({ map: smokeTex, blending: THREE.NormalBlending, depthWrite: false, opacity: 0.5 });
+        const sprite = new THREE.Sprite(mat);
+        sprite.position.copy(pos).add(new THREE.Vector3((Math.random()-0.5)*0.4,(Math.random()-0.5)*0.4,(Math.random()-0.5)*0.4));
+        sprite.scale.set(0.3, 0.3, 1);
+        scene.add(sprite);
+        smokeParticles.push({ sprite, vel: new THREE.Vector3((Math.random()-0.5)*1.5, 1+Math.random()*3, (Math.random()-0.5)*1.5), life: 1.5+Math.random()*2.5, age:0, initOp:0.5 });
+    }
+}
+
+function updateBlowUp(dt){
+    if(!engineBlown)return;
+    const sdt=dt*BLOWUP_SLOWMO;
+    blowUpTimer+=sdt;
+    if(blowUpPhase===1){
+        const heat = Math.min(blowUpTimer / 3.5, 1.0);
+        allPistonGroups.forEach(p=>{
+            if(brokenPistons.includes(p.pistonMesh.name)) return;
+            p.pistonMesh.material.color.copy(new THREE.Color(0xc8ccd4).lerp(new THREE.Color(0xcc4422), heat));
+            p.cylMesh.material.emissive.set(new THREE.Color(0x551100).multiplyScalar(heat));
+        });
+        engineGroup.position.set(0.008*Math.sin(blowUpTimer*40), 0, 0.008*Math.cos(blowUpTimer*35));
+        if(blowUpTimer > 3.5){ blowUpPhase=2; blowUpTimer=0; targetRPM = 0; }
+    }else if(blowUpPhase===2){
+        if(blowUpTimer < 0.1 && allPistonGroups.length){
+            const p = allPistonGroups[0];
+            const wp=new THREE.Vector3(); p.pistonMesh.getWorldPosition(wp);
+            spawnSmoke(wp, 15);
+            for(let i=0;i<8;i++) {
+                const g=new THREE.TetrahedronGeometry(0.04+Math.random()*0.06,1);
+                const mesh=new THREE.Mesh(g, new THREE.MeshStandardMaterial({color:'#c0c0d0', roughness:0.4, metalness:0.9}));
+                mesh.position.copy(wp); mesh.rotation.set(Math.random()*Math.PI,Math.random()*Math.PI,Math.random()*Math.PI);
+                scene.add(mesh);
+                debrisParticles.push({mesh, vel:new THREE.Vector3((Math.random()-0.5)*4,2+Math.random()*6,(Math.random()-0.5)*4), life:3, age:0});
+            }
+            p.pistonMesh.visible=false; p.rodGroup.visible=false;
+            brokenPistons.push(p.pistonMesh.name);
+        }
+        engineGroup.position.set(0.012*Math.sin(blowUpTimer*50), 0, 0.012*Math.cos(blowUpTimer*45));
+        if(blowUpTimer>2.0){ blowUpPhase=3; blowUpTimer=0; }
+    }else if(blowUpPhase===3){
+        const remaining = allPistonGroups.filter(p=>!brokenPistons.includes(p.pistonMesh.name));
+        if(remaining.length && Math.random()<0.04){
+            const victim = remaining[Math.floor(Math.random()*remaining.length)];
+            const wp=new THREE.Vector3(); victim.pistonMesh.getWorldPosition(wp);
+            spawnSmoke(wp, 8);
+            victim.pistonMesh.visible=false; victim.rodGroup.visible=false;
+            brokenPistons.push(victim.pistonMesh.name);
+        }
+        engineGroup.position.set(0.008*Math.sin(blowUpTimer*40), 0, 0.008*Math.cos(blowUpTimer*35));
+        if(blowUpTimer>4.0 || remaining.length===0){ blowUpPhase=4; blowUpTimer=0; engineGroup.position.set(0,0,0); }
+    }
+    // 更新粒子
+    [fireParticles, smokeParticles].forEach(arr=>{
+        for(let i=arr.length-1;i>=0;i--){
+            const p=arr[i]; p.age+=sdt;
+            if(p.sprite){
+                p.sprite.position.add(p.vel.clone().multiplyScalar(sdt));
+                p.sprite.material.opacity = arr===smokeParticles ? p.initOp*(1-p.age/p.life) : 1-p.age/p.life;
+                p.sprite.scale.multiplyScalar(1 + sdt*2);
+                if(p.age>p.life) { scene.remove(p.sprite); p.sprite.material.dispose(); arr.splice(i,1); }
+            }
+        }
+    });
+    for(let i=debrisParticles.length-1;i>=0;i--){
+        const d=debrisParticles[i]; d.age+=sdt;
+        d.vel.y -= 9.8*sdt; d.mesh.position.add(d.vel.clone().multiplyScalar(sdt));
+        d.mesh.rotation.x+=sdt*5; d.mesh.rotation.y+=sdt*4;
+        if(d.mesh.position.y<-6 || d.age>d.life){ disposeRecursive(d.mesh); scene.remove(d.mesh); debrisParticles.splice(i,1); }
+    }
+}
+
+// 射线
+const raycaster=new THREE.Raycaster(); const mouse=new THREE.Vector2(); let hovered=null;
+function onPointerMove(e){
+    mouse.x=(e.clientX/window.innerWidth)*2-1;
+    mouse.y=-(e.clientY/window.innerHeight)*2+1;
+    raycaster.setFromCamera(mouse,camera);
+    const targets=[]; engineGroup.traverse(c=>{if(c.isMesh)targets.push(c);});
+    const hits=raycaster.intersectObjects(targets);
+    if(hits.length){
+        const name=hits[0].object.name||'';
+        let cat='';
+        if(name.includes('piston-pin'))cat='活塞销'; else if(name.includes('piston'))cat='活塞';
+        else if(name.includes('rod'))cat='连杆'; else if(name.includes('crank'))cat='曲轴';
+        else if(name.includes('cylinder'))cat='气缸'; else if(name.includes('flywheel'))cat='飞轮';
+        if(cat && hovered!==cat){
+            hovered=cat; tooltip.classList.add('visible');
+            tooltip.style.left=(e.clientX+18)+'px'; tooltip.style.top=(e.clientY-40)+'px';
+            tooltip.querySelector('.part-name').textContent=cat;
+        }
+    }else if(hovered){ hovered=null; tooltip.classList.remove('visible'); }
+}
+
+function generateAnalysis(cyl,vType){
+    return ['转速超出设计极限（>8500 RPM），惯性力导致零件过载失效。','活塞高温膨胀拉缸，活塞环断裂。','连杆轴承损坏，引发弯曲或断裂。',
+        vType?`V${cyl}引擎曲轴扭转振动加剧。`:`直列${cyl}缸引擎气门弹簧共振。`,'曲轴箱油雾点燃，造成二次破坏。'];
+}
+function showBlowupAnalysis(){
+    analysisContent.innerHTML=generateAnalysis(currentCylinders,isVType).map(r=>`<li>${r}</li>`).join('');
+    blowupPanel.classList.add('visible');
+}
+function hideBlowupAnalysis(){ blowupPanel.classList.remove('visible'); }
+closeAnalysisBtn.addEventListener('click',e=>{e.stopPropagation(); hideBlowupAnalysis();});
+
+let targetRPM=800, currentRPM=0;
+const gearRPMs=[0,800,2000,3500,5000,7000,8500,9999];
+const gearNames=['未启动','1档 怠速','2档 低速','3档 中速','4档 高速','5档 极速','6档 红线','💥爆缸'];
+const clock=new THREE.Clock(); let lastAngle=0.1;
+
+function animate(){
+    requestAnimationFrame(animate);
+    const dt=Math.min(clock.getDelta(),0.1);
+    const rpmSpeed = engineBlown ? (targetRPM===0 ? 2000 : 600) : 600;
+    currentRPM += (targetRPM - currentRPM) * Math.min(dt * rpmSpeed / 1000, 1);
+    if(Math.abs(currentRPM-targetRPM)<5) currentRPM=targetRPM;
+    rpmDisplay.textContent=Math.round(currentRPM)+' RPM';
+    if(currentRPM>=8500||engineBlown) rpmDisplay.classList.add('over-rev');
+    else rpmDisplay.classList.remove('over-rev');
+
+    let angleAdd = (currentRPM/60)*Math.PI*2*dt;
+    if(engineBlown && blowUpPhase>=2) angleAdd *= 0.5;
+    if(engineBlown && blowUpPhase<4) angleAdd += (Math.random()-0.5)*0.02;
+    lastAngle += angleAdd;
+    updateAllPistonPositions(lastAngle);
+    if (!engineBlown) updateCylinderGlow(lastAngle);
+    if(engineBlown) updateBlowUp(dt);
+    controls.update();
+    renderer.render(scene,camera);
+}
+
+// 事件
+engineSelector.querySelectorAll('.engine-btn').forEach(b=>{
+    b.addEventListener('click',()=>{
+        if(engineBlown) resetEngine();
+        engineSelector.querySelectorAll('.engine-btn').forEach(b=>b.classList.remove('active'));
+        b.classList.add('active');
+        buildEngine(parseInt(b.dataset.cylinders));
+        speedSlider.value=1; targetRPM=gearRPMs[1]; currentRPM=targetRPM;
+        speedLabel.textContent=gearNames[1]; gearBadge.textContent=gearNames[1]; gearBadge.classList.remove('danger');
+        rpmDisplay.classList.remove('over-rev'); lastAngle=0.1; hideBlowupAnalysis();
+    });
+});
+speedSlider.addEventListener('input',()=>{
+    const v=parseInt(speedSlider.value);
+    if(v>=7){
+        if(!engineBlown){
+            targetRPM=gearRPMs[7]; speedLabel.textContent=gearNames[7]; speedLabel.style.color='#e04040';
+            gearBadge.textContent=gearNames[7]; triggerBlowUp();
+        }
+    }else{
+        if(engineBlown) resetEngine();
+        targetRPM=gearRPMs[v]; speedLabel.textContent=gearNames[v]; speedLabel.style.color='';
+        gearBadge.textContent=gearNames[v]; gearBadge.classList.remove('danger');
+        rpmDisplay.classList.remove('over-rev');
+        if(v===0) targetRPM=0;
+    }
+});
+resetBtn.addEventListener('click',()=>{
+    resetEngine();
+    speedSlider.value=1; targetRPM=gearRPMs[1]; currentRPM=targetRPM;
+    speedLabel.textContent=gearNames[1]; gearBadge.textContent=gearNames[1]; gearBadge.classList.remove('danger');
+    rpmDisplay.classList.remove('over-rev'); lastAngle=0.1;
+});
+
+viewButtons.forEach(b=>{
+    b.addEventListener('click',()=>{
+        if(b.id==='reset-btn')return;
+        const presets={
+            perspective:{pos:[3.5,2.0,7.0],tgt:[0,-0.2,0]}, front:{pos:[0,0.5,7.5],tgt:[0,-0.2,0]},
+            side:{pos:[7.5,0.3,0],tgt:[0,-0.2,0]}, top:{pos:[0,8,0.2],tgt:[0,-0.2,0]},
+            crankshaft:{pos:[1.2,-1.0,3.2],tgt:[0,-0.5,0]}, piston:{pos:[1.6,2.2,0.7],tgt:[0,0.7,0]}
+        };
+        const v=b.dataset.view;
+        if(!presets[v])return;
+        viewButtons.forEach(b=>b.classList.remove('active-view'));
+        b.classList.add('active-view');
+        const st=performance.now();
+        const sPos=camera.position.clone(), ePos=new THREE.Vector3(...presets[v].pos);
+        const sTgt=controls.target.clone(), eTgt=new THREE.Vector3(...presets[v].tgt);
+        function anim(t){
+            const p=Math.min((t-st)/800,1);
+            const ease=p<0.5?4*p**3:1-(-2*p+2)**3/2;
+            camera.position.lerpVectors(sPos,ePos,ease);
+            controls.target.lerpVectors(sTgt,eTgt,ease);
+            if(p<1) requestAnimationFrame(anim);
+        }
+        requestAnimationFrame(anim);
+    });
+});
+
+window.addEventListener('pointermove', onPointerMove);
+window.addEventListener('resize', () => {
+    camera.aspect = container.clientWidth / container.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container.clientWidth, container.clientHeight);
+});
+
+buildEngine(4);
+speedSlider.value=1; targetRPM=gearRPMs[1]; currentRPM=targetRPM;
+speedLabel.textContent=gearNames[1]; gearBadge.textContent=gearNames[1];
+lastAngle=0.1;
+requestAnimationFrame(animate);
+
+console.log('引擎模拟器已启动，如果看不到引擎请检查控制台错误');
+</script>
+</body>
+</html>
